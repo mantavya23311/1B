@@ -6,3 +6,25 @@ os.makedirs("pdfs", exist_ok=True)
 
 !apt-get install -y tesseract-ocr
 !pip install pytesseract
+
+
+import shutil
+shutil.move("South of France - Cities.pdf", "pdfs/")
+
+import shutil
+shutil.move("South of France - Cuisine.pdf", "pdfs/")
+
+import shutil
+shutil.move("South of France - History.pdf", "pdfs/")
+
+import shutil
+shutil.move("South of France - Restaurants and Hotels.pdf", "pdfs/")
+
+import shutil
+shutil.move("South of France - Things to Do.pdf", "pdfs/")
+
+import shutil
+shutil.move("South of France - Tips and Tricks.pdf", "pdfs/")
+
+import shutil
+shutil.move("South of France - Traditions and Culture.pdf", "pdfs/")
