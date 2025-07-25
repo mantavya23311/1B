@@ -1,0 +1,1 @@
+generate_round1b_output("challenge1b_input.json", "pdfs/", sections_to_merge=2)
