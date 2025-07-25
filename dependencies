@@ -1,0 +1,8 @@
+!pip install -q sentence-transformers pdf2image PyMuPDF
+!apt-get install -y poppler-utils
+
+import os
+os.makedirs("pdfs", exist_ok=True)
+
+!apt-get install -y tesseract-ocr
+!pip install pytesseract
