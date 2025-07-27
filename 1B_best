@@ -3,7 +3,7 @@ import json
 import re
 import statistics
 from datetime import datetime
-from collections import defaultdict
+from collections import defaultdict, Counter
 from sentence_transformers import SentenceTransformer, util
 from pdf2image import convert_from_path
 from your_1a_code import extract_pdf_spans, classify_headers, group_adjacent_spans
@@ -163,7 +163,17 @@ def generate_round1b_output(input_json_path, sections_to_merge=5):
     for i, sec in enumerate(top_sections):
         sec["importance_rank"] = i + 1
 
-    top_5_subsections = sorted(all_matched_sections, key=lambda x: x["score"], reverse=True)[:5]
+    subsection_limit = 5
+    max_per_pdf = 2
+    selected_subsections = []
+    per_pdf_counter = Counter()
+    for sec in sorted(all_matched_sections, key=lambda x: x["score"], reverse=True):
+        doc = sec["document"]
+        if per_pdf_counter[doc] < max_per_pdf:
+            selected_subsections.append(sec)
+            per_pdf_counter[doc] += 1
+        if len(selected_subsections) >= subsection_limit:
+            break
 
     output = {
         "metadata": {
@@ -185,12 +195,12 @@ def generate_round1b_output(input_json_path, sections_to_merge=5):
                 "document": sec["document"],
                 "refined_text": sec["content"],
                 "page_number": sec["page"]
-            } for sec in top_5_subsections
+            } for sec in selected_subsections
         ]
     }
 
     with open("challenge1b_output.json", "w", encoding="utf-8") as f:
         json.dump(output, f, indent=2, ensure_ascii=False)
 
-    print(f"\n✅ Final Output: 1 top section from top 5 PDFs, and top 5 subsections overall.")
+    print(f"\n✅ Final Output: 1 top section from top 5 PDFs, and top 5 subsections overall (max 3 per PDF).")
     print("✅ challenge1b_output.json saved.")
