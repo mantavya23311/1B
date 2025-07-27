@@ -105,6 +105,7 @@ def generate_round1b_output(input_json_path, pdf_dir,sections_to_merge=5):
     print(f"\U0001f9e0 Extracted keywords & facts: {keyword_list}")
 
     pdf_section_info = []
+    all_matched_sections = []
 
     for doc in documents:
         filename = doc["filename"]
@@ -128,7 +129,7 @@ def generate_round1b_output(input_json_path, pdf_dir,sections_to_merge=5):
                 sec["score"] = ranker.score_section(sec["section_title"], sec["content"])
                 matched_sections.append(sec)
 
-        # Remove undesired sections
+        # Filter
         matched_sections = [
             s for s in matched_sections
             if s["section_title"].strip().lower() not in {"general", "conclusion"}
@@ -143,6 +144,7 @@ def generate_round1b_output(input_json_path, pdf_dir,sections_to_merge=5):
                 "match_count": match_count,
                 "sections": matched_sections
             })
+            all_matched_sections.extend(matched_sections)
 
     # Sort PDFs by keyword match count
     top_pdfs = sorted(pdf_section_info, key=lambda x: x["match_count"], reverse=True)[:top_pdf_count]
@@ -153,10 +155,13 @@ def generate_round1b_output(input_json_path, pdf_dir,sections_to_merge=5):
         best_section = sorted(pdf["sections"], key=lambda x: x["score"], reverse=True)[0]
         top_sections.append(best_section)
 
-    # Add rank
+    # Sort for importance rank
     top_sections = sorted(top_sections, key=lambda x: x["score"], reverse=True)
     for i, sec in enumerate(top_sections):
         sec["importance_rank"] = i + 1
+
+    # Get top 5 subsections overall for subsection_analysis
+    top_5_subsections = sorted(all_matched_sections, key=lambda x: x["score"], reverse=True)[:5]
 
     output = {
         "metadata": {
@@ -178,12 +183,12 @@ def generate_round1b_output(input_json_path, pdf_dir,sections_to_merge=5):
                 "document": sec["document"],
                 "refined_text": sec["content"],
                 "page_number": sec["page"]
-            } for sec in top_sections
+            } for sec in top_5_subsections
         ]
     }
 
     with open("challenge1b_output.json", "w", encoding="utf-8") as f:
         json.dump(output, f, indent=2, ensure_ascii=False)
 
-    print(f"\n✅ Selected best 1 section from each of top {top_pdf_count} PDFs by keyword matches.")
+    print(f"\n✅ Final Output: 1 top section from top 5 PDFs, and top 5 subsections overall.")
     print("✅ challenge1b_output.json saved.")
