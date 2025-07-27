@@ -1,0 +1,282 @@
+import os
+import json
+import re
+import statistics
+from datetime import datetime
+from collections import defaultdict
+from sentence_transformers import SentenceTransformer, util
+from pdf2image import convert_from_path
+from your_1a_code import extract_pdf_spans, classify_headers, group_adjacent_spans
+import spacy
+import unicodedata
+import statistics
+
+def normalize_text(text):
+    """
+    Normalize and clean Unicode symbols (dashes, quotes, bullets, etc.)
+    to standard ASCII characters.
+    """
+    replacements = {
+        "\u2013": "-",  # en dash
+        "\u2014": "-",  # em dash
+        "\u2018": "'",  # left single quote
+        "\u2019": "'",  # right single quote
+        "\u201c": '"',  # left double quote
+        "\u201d": '"',  # right double quote
+        "\u2022": "-",  # bullet
+        "\u00a0": " ",  # non-breaking space
+        "\u2212": "-",  # minus sign
+        "\u2044": "/",  # fraction slash
+    }
+
+    for bad, good in replacements.items():
+        text = text.replace(bad, good)
+    # Normalize characters like ç → c if needed
+    text = unicodedata.normalize("NFKC", text)
+    return text
+
+# Load spaCy English model
+nlp = spacy.load("en_core_web_sm")
+def extract_pos_info(role: str, task: str):
+    """
+    From the concatenated role + task description, extract:
+      - Lemmas of NOUN, ADJ, VERB, PROPN
+      - Named entities (ORG, GPE, DATE, etc.) as facts
+    Returns a deduped list of lower‑cased tokens/entities.
+    """
+    text = f"{role}. {task}"
+    doc = nlp(text)
+
+    # 1) POS tokens
+    pos_tokens = {
+        token.lemma_.lower()
+        for token in doc
+        if token.pos_ in {"NOUN", "ADJ", "VERB", "PROPN"}
+           and token.is_alpha
+           and not token.is_stop
+           and len(token) > 3
+    }
+
+    # 2) Named entities (facts)
+    entities = {
+        ent.text.lower()
+        for ent in doc.ents
+        if len(ent.text) > 2
+    }
+
+    return list(pos_tokens | entities)
+
+# --- Utility: Extract boost terms dynamically from persona + job ---
+def extract_boost_terms(text):
+    """
+    Extracts meaningful keywords from persona + job description.
+    Removes common stopwords and returns lowercased terms.
+    """
+    stopwords = {
+        "the","and","or","to","for","a","of","in","on","at","with",
+        "is","as","by","an","be","will","this","that","from"
+    }
+    words = re.findall(r"[a-zA-Z]+", text.lower())
+    return [w for w in words if len(w) > 3 and w not in stopwords]
+
+# --- Ranker Class ---
+class PersonaRanker:
+    def __init__(self, role, job):
+        self.persona_query = f"{role}. {job}"
+        self.model = SentenceTransformer("all-MiniLM-L6-v2")
+        self.query_embedding = self.model.encode(self.persona_query, convert_to_tensor=True)
+        # ✅ dynamic persona-driven boost terms
+        self.boost_terms = extract_boost_terms(self.persona_query)
+        print(f"🔍 Persona-driven boost terms: {self.boost_terms}")
+
+    def score_section(self, title, content):
+        """
+        Scores a section by semantic relevance + persona keyword boost.
+        Penalizes overly hyper-specific titles (e.g., “Monaco: Explore…”).
+        """
+        combined = f"{title}. {content}"
+        section_embedding = self.model.encode(combined, convert_to_tensor=True)
+        base_score = util.pytorch_cos_sim(self.query_embedding, section_embedding).item()
+
+        # ✅ Boost if persona/job keywords appear in content
+        boost = sum(1 for word in self.boost_terms if word in content.lower()) * 0.01
+
+        # ✅ Penalize hyper-specific subheaders (e.g., “Monaco: Explore…”)
+        if ":" in title and len(title.split()) > 5:
+            base_score -= 0.02
+
+        return base_score + boost
+
+    def rank_sections(self, sections):
+        """
+        Scores and sorts all sections by relevance to persona/job.
+        """
+        for sec in sections:
+            sec["score"] = self.score_section(sec["section_title"], sec["content"])
+        return sorted(sections, key=lambda x: x["score"], reverse=True)
+
+# --- Heading Matching ---
+def match_heading(span_group, headers):
+    """
+    Finds the closest heading above the paragraph.
+    """
+    group_top = span_group[0]['y_top']
+    group_page = span_group[0]['page']
+    same_page = [h for h in headers if h['page'] == group_page]
+    above = [h for h in same_page if h.get('y_top', 0) < group_top]
+    if not above:
+        return "General"
+    return sorted(above, key=lambda h: group_top - h.get('y_top', 0))[0]['text']
+
+# --- Section Extractor (with bullet cleanup) ---
+def extract_sections_for_ranking(pdf_path, spans, images, max_size_th, mid_size, max_size):
+    headers = classify_headers(spans, images, max_size_th, mid_size, max_size)
+    flat_spans = [s for page in spans for s in page]
+    paragraphs = group_adjacent_spans(flat_spans)
+
+    sections = []
+    for para in paragraphs:
+        text = normalize_text(" ".join([s["text"] for s in para]))
+        if 15 < len(text) < 1500:
+            section_title = match_heading(para, headers)
+
+            # 🚩 1B-only cleanup: bullet/overlong header filter
+            if section_title.startswith(("•", "-", "–")) or len(section_title.split()) > 10:
+                section_title = text.split(".")[0][:80]  # fallback to first sentence
+
+            sections.append({
+                "document": os.path.basename(pdf_path),
+                "section_title": section_title,
+                "content": text,
+                "page": para[0]["page"]
+            })
+    return sections
+
+# --- Title Cleaning for Merge ---
+def pick_clean_title(top_sections, doc_name):
+    """
+    Picks a clean title for the merged summary.
+    - Skips bullet-point style titles and overly long titles.
+    - Falls back to generic 'Summary of {doc_name}' if no good title found.
+    """
+    for sec in top_sections:
+        title = sec["section_title"].strip()
+        if not (title.startswith(("•", "-", "–")) or len(title.split()) > 10):
+            return title
+    return f"Summary of {doc_name}"
+
+# --- Main Pipeline ---
+def generate_round1b_output(input_json_path, pdf_dir, sections_to_merge=5):
+    with open(input_json_path) as f:
+        config = json.load(f)
+
+    role = config["persona"]["role"]
+    task = config["job_to_be_done"]["task"]
+    documents = config["documents"]
+    ranker = PersonaRanker(role, task)
+
+    keyword_list = extract_pos_info(role, task)
+    print(f"\U0001f9e0 Extracted keywords & facts: {keyword_list}")
+
+    all_filtered_sections = []
+
+    for doc in documents:
+        filename = doc["filename"]
+        pdf_path = os.path.join(pdf_dir, filename)
+        print(f"\U0001f4c4 Processing {filename}...")
+
+        spans, threshold_size, doc_obj = extract_pdf_spans(pdf_path)
+        images = convert_from_path(pdf_path, dpi=200)
+
+        all_sizes = sorted({s["font_size"] for page in spans for s in page}, reverse=True)
+        max_size_th = all_sizes[1] if len(all_sizes) > 1 else threshold_size
+        mid_size = statistics.median(all_sizes) if len(all_sizes) > 1 else max_size_th * 0.85
+        max_size = all_sizes[0] if all_sizes else threshold_size
+
+        all_sections = extract_sections_for_ranking(pdf_path, spans, images, max_size_th, mid_size, max_size)
+        print(f"   ↳ Found {len(all_sections)} total sections")
+
+        matched_sections = []
+        for sec in all_sections:
+            if any(k in sec["content"].lower() for k in keyword_list):
+                matched_sections.append(sec)
+            if len(matched_sections) == 10:
+                break
+
+        if not matched_sections:
+            matched_sections = [all_sections[0]] if all_sections else []
+
+        print(f"   ↳ {len(matched_sections)} matched sections selected for scoring")
+
+        for sec in matched_sections:
+            sec["score"] = ranker.score_section(sec["section_title"], sec["content"])
+
+        all_filtered_sections.extend(matched_sections)
+
+    grouped = defaultdict(list)
+    for sec in all_filtered_sections:
+        grouped[sec["document"]].append(sec)
+
+    for doc_name, sec_list in grouped.items():
+        print(f"\n\U0001f4ca Top matched sections for {doc_name}:")
+        for sec in sorted(sec_list, key=lambda s: s["score"], reverse=True):
+            print(f"  • {sec['section_title'][:70]}... (score={sec['score']:.3f})")
+
+    merged_sections_per_pdf = []
+    for doc_name, sec_list in grouped.items():
+        top_sections = sorted(sec_list, key=lambda x: x["score"], reverse=True)[:sections_to_merge]
+        scores = [s["score"] for s in top_sections]
+        mean_score = statistics.mean(scores)
+        mean_deviation = statistics.mean([abs(s - mean_score) for s in scores])
+        importance_score = mean_score - mean_deviation
+
+        merged_text = " ".join([sec["content"] for sec in top_sections])
+        merged_title = pick_clean_title(top_sections, doc_name)
+
+        print(f"\U0001f4c8 Mean score for {doc_name}: {mean_score:.4f} | Mean Deviation: {mean_deviation:.4f} | Score: {importance_score:.4f}")
+
+        merged_sections_per_pdf.append({
+            "document": doc_name,
+            "section_title": merged_title,
+            "content": merged_text,
+            "page": top_sections[0]["page"],
+            "mean_score": round(mean_score, 4),
+            "mean_deviation": round(mean_deviation, 4),
+            "importance_score": round(importance_score, 4)
+        })
+
+    ranked_sections = sorted(merged_sections_per_pdf, key=lambda x: x["importance_score"], reverse=True)
+
+    for i, sec in enumerate(ranked_sections):
+        sec["importance_rank"] = i + 1
+
+    output = {
+        "metadata": {
+            "input_documents": [doc["filename"] for doc in documents],
+            "persona": role,
+            "job_to_be_done": task,
+            "processing_timestamp": datetime.utcnow().isoformat()
+        },
+        "extracted_sections": [
+            {
+                "document": sec["document"],
+                "section_title": sec["section_title"],
+                "importance_rank": sec["importance_rank"],
+                "page_number": sec["page"]
+            } for sec in ranked_sections
+        ],
+        "subsection_analysis": [
+            {
+                "document": sec["document"],
+                "refined_text": sec["content"],
+                "page_number": sec["page"]
+            } for sec in ranked_sections
+        ]
+    }
+
+    with open("challenge1b_output.json", "w", encoding="utf-8") as f:
+        json.dump(output, f, indent=2, ensure_ascii=False)
+
+    print(f"\n✅ Generated {len(ranked_sections)} merged summaries (one per PDF)")
+    print("✅ challenge1b_output.json saved.")
+
