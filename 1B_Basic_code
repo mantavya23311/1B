@@ -1,241 +1,189 @@
 import os
 import json
 import re
-import datetime
 import statistics
+from datetime import datetime
 from collections import defaultdict
-import fitz  # PyMuPDF
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
-import torch
+from sentence_transformers import SentenceTransformer, util
+from pdf2image import convert_from_path
+from your_1a_code import extract_pdf_spans, classify_headers, group_adjacent_spans
+import spacy
+import unicodedata
 
-# --- 1. Helper functions replacing utils ---
+def normalize_text(text):
+    replacements = {
+        "\u2013": "-", "\u2014": "-", "\u2018": "'", "\u2019": "'",
+        "\u201c": '"', "\u201d": '"', "\u2022": "-", "\u00a0": " ",
+        "\u2212": "-", "\u2044": "/"
+    }
+    for bad, good in replacements.items():
+        text = text.replace(bad, good)
+    return unicodedata.normalize("NFKC", text)
 
-def load_input_json(path):
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+# Load spaCy model
+nlp = spacy.load("en_core_web_sm")
 
-def get_pdf_text_from_path(pdf_path):
-    """Extract text spans and images from a PDF."""
-    doc = fitz.open(pdf_path)
-    spans = []
-    for page in doc:
-        blocks = page.get_text("dict")["blocks"]
-        page_spans = []
-        for b in blocks:
-            for line in b.get("lines", []):
-                for span in line.get("spans", []):
-                    page_spans.append(span)
-        spans.append(page_spans)
-    return spans, None
+def extract_pos_info(role: str, task: str):
+    text = f"{role}. {task}"
+    doc = nlp(text)
+    pos_tokens = {
+        token.lemma_.lower()
+        for token in doc
+        if token.pos_ in {"NOUN", "ADJ", "VERB", "PROPN"}
+           and token.is_alpha and not token.is_stop and len(token) > 3
+    }
+    entities = {
+        ent.text.lower()
+        for ent in doc.ents if len(ent.text) > 2
+    }
+    return list(pos_tokens | entities)
 
-def group_by_document(heuristics):
-    grouped = defaultdict(list)
-    for h in heuristics:
-        grouped[h["doc_path"]].append(h)
-    return dict(grouped)
+def extract_boost_terms(text):
+    stopwords = {
+        "the", "and", "or", "to", "for", "a", "of", "in", "on", "at", "with",
+        "is", "as", "by", "an", "be", "will", "this", "that", "from"
+    }
+    words = re.findall(r"[a-zA-Z]+", text.lower())
+    return [w for w in words if len(w) > 3 and w not in stopwords]
 
-# --- 2. Simple heuristic: find headers by font size and boldness ---
+class PersonaRanker:
+    def __init__(self, role, job):
+        self.persona_query = f"{role}. {job}"
+        self.model = SentenceTransformer("all-MiniLM-L6-v2")
+        self.query_embedding = self.model.encode(self.persona_query, convert_to_tensor=True)
+        self.boost_terms = extract_boost_terms(self.persona_query)
+        print(f"🔍 Persona-driven boost terms: {self.boost_terms}")
 
-def run_all_heuristics(spans, images, doc_path):
-    """
-    Basic heuristic to detect headers: lines with font size above median * 1.15 or bold text.
-    Returns list of dicts with header text, page number, bbox, doc_path.
-    """
-    heuristics = []
-    all_font_sizes = [s["size"] for page in spans for s in page if s["text"].strip()]
-    if not all_font_sizes:
-        return heuristics
-    median_size = statistics.median(all_font_sizes)
-    header_threshold = median_size * 1.15
+    def score_section(self, title, content):
+        combined = f"{title}. {content}"
+        section_embedding = self.model.encode(combined, convert_to_tensor=True)
+        base_score = util.pytorch_cos_sim(self.query_embedding, section_embedding).item()
+        boost = sum(1 for word in self.boost_terms if word in content.lower()) * 0.01
+        if ":" in title and len(title.split()) > 5:
+            base_score -= 0.02
+        return base_score + boost
 
-    for page_idx, page_spans in enumerate(spans):
-        page_num = page_idx + 1
-        for span in page_spans:
-            text = span["text"].strip()
-            if len(text) < 5 or len(text) > 150 or len(text.split()) < 2:
-                continue
-            size = span["size"]
-            is_bold = (span.get("flags", 0) & (1 << 4)) > 0
-            if size >= header_threshold or is_bold:
-                heuristics.append({
-                    "doc_path": doc_path,
-                    "header_text": text,
-                    "page": page_num,
-                    "bbox": span["bbox"],
-                    "size": size,
-                    "is_bold": is_bold,
-                })
-    print(f"[Heuristics] Found {len(heuristics)} potential headers in {os.path.basename(doc_path)}")
-    return heuristics
+def match_heading(span_group, headers):
+    group_top = span_group[0]['y_top']
+    group_page = span_group[0]['page']
+    same_page = [h for h in headers if h['page'] == group_page]
+    above = [h for h in same_page if h.get('y_top', 0) < group_top]
+    if not above:
+        return "General"
+    return sorted(above, key=lambda h: group_top - h.get('y_top', 0))[0]['text']
 
-def select_best_heuristics_per_document(all_heuristics, persona, task):
-    """
-    Use AI to select the most relevant header per document.
-    If AI fails, fallback to topmost header.
-    """
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model_name = "google/flan-t5-base"
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForSeq2SeqLM.from_pretrained(model_name).to(device)
+def extract_sections_for_ranking(pdf_path, spans, images, max_size_th, mid_size, max_size):
+    headers = classify_headers(spans, images, max_size_th, mid_size, max_size)
+    flat_spans = [s for page in spans for s in page]
+    paragraphs = group_adjacent_spans(flat_spans)
 
-    heuristics_by_doc = defaultdict(list)
-    for h in all_heuristics:
-        heuristics_by_doc[h["doc_path"]].append(h)
+    sections = []
+    for para in paragraphs:
+        text = normalize_text(" ".join([s["text"] for s in para]))
+        if 15 < len(text) < 1500:
+            section_title = match_heading(para, headers)
+            if section_title.startswith(("•", "-", "–")) or len(section_title.split()) > 10:
+                section_title = text.split(".")[0][:80]
+            sections.append({
+                "document": os.path.basename(pdf_path),
+                "section_title": section_title,
+                "content": text,
+                "page": para[0]["page"]
+            })
+    return sections
 
-    selected = []
+def generate_round1b_output(input_json_path, pdf_dir,sections_to_merge=5):
+    top_pdf_count=5
+    with open(input_json_path) as f:
+        config = json.load(f)
 
-    for doc_path, heuristics in heuristics_by_doc.items():
-        if len(heuristics) == 1:
-            selected.append(heuristics[0])
-            continue
+    role = config["persona"]["role"]
+    task = config["job_to_be_done"]["task"]
+    documents = config["documents"]
+    ranker = PersonaRanker(role, task)
+    keyword_list = extract_pos_info(role, task)
+    print(f"\U0001f9e0 Extracted keywords & facts: {keyword_list}")
 
-        heuristic_list_str = ""
-        for i, h in enumerate(heuristics, 1):
-            heuristic_list_str += f"{i}. {h['header_text']} (page {h['page']})\n"
+    pdf_section_info = []
 
-        prompt = f"""
-You are a {persona}. Your task is: {task}.
-You have the following sections in document '{os.path.basename(doc_path)}':
-{heuristic_list_str}
-Please respond with only the number of the section most relevant for this task.
-"""
+    for doc in documents:
+        filename = doc["filename"]
+        pdf_path = os.path.join(pdf_dir, filename)
+        print(f"\U0001f4c4 Processing {filename}...")
 
-        inputs = tokenizer(prompt, return_tensors="pt", max_length=1024, truncation=True).to(device)
-        result_ids = model.generate(inputs.input_ids, max_length=16, num_beams=4, early_stopping=True)
-        raw_output = tokenizer.decode(result_ids[0], skip_special_tokens=True).strip()
+        spans, threshold_size, doc_obj = extract_pdf_spans(pdf_path)
+        images = convert_from_path(pdf_path, dpi=200)
 
-        match = re.search(r'(\d+)', raw_output)
-        if match:
-            idx = int(match.group(1)) - 1
-            if 0 <= idx < len(heuristics):
-                selected.append(heuristics[idx])
-                continue
+        all_sizes = sorted({s["font_size"] for page in spans for s in page}, reverse=True)
+        max_size_th = all_sizes[1] if len(all_sizes) > 1 else threshold_size
+        mid_size = statistics.median(all_sizes) if len(all_sizes) > 1 else max_size_th * 0.85
+        max_size = all_sizes[0] if all_sizes else threshold_size
 
-        # Fallback: choose topmost header by page and y coordinate
-        top_header = sorted(heuristics, key=lambda h: (h["page"], h["bbox"][1]))[0]
-        print(f"⚠️ AI failed to pick for {os.path.basename(doc_path)}. Using top header fallback.")
-        selected.append(top_header)
+        all_sections = extract_sections_for_ranking(pdf_path, spans, images, max_size_th, mid_size, max_size)
+        print(f"   ↳ Found {len(all_sections)} total sections")
 
-    return selected
+        matched_sections = []
+        for sec in all_sections:
+            if any(k in sec["content"].lower() for k in keyword_list):
+                sec["score"] = ranker.score_section(sec["section_title"], sec["content"])
+                matched_sections.append(sec)
 
-def extract_text_under_header(doc, all_doc_heuristics, target_heuristic):
-    """Extract text content that falls under a specific header."""
-    page = doc[target_heuristic['page'] - 1]
-    header_bbox = fitz.Rect(target_heuristic['bbox'])
+        # Remove undesired sections
+        matched_sections = [
+            s for s in matched_sections
+            if s["section_title"].strip().lower() not in {"general", "conclusion"}
+        ]
 
-    next_header_y = page.rect.height
-    for h in all_doc_heuristics:
-        if h['page'] == target_heuristic['page'] and h['bbox'][1] > header_bbox.y1:
-            next_header_y = min(next_header_y, h['bbox'][1])
+        match_count = len(matched_sections)
+        print(f"   ↳ {match_count} keyword-matched sections")
 
-    clip_rect = fitz.Rect(page.rect.x0, header_bbox.y1, page.rect.x1, next_header_y)
+        if match_count > 0:
+            pdf_section_info.append({
+                "filename": filename,
+                "match_count": match_count,
+                "sections": matched_sections
+            })
 
-    text = page.get_text("text", clip=clip_rect).strip().replace('\n', ' ')
-    return text
+    # Sort PDFs by keyword match count
+    top_pdfs = sorted(pdf_section_info, key=lambda x: x["match_count"], reverse=True)[:top_pdf_count]
 
-def summarize_text_for_trip(text, persona, job, max_tokens=300):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model_name = "google/flan-t5-base"
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForSeq2SeqLM.from_pretrained(model_name).to(device)
+    # Pick the best scored section from each of top 5 PDFs
+    top_sections = []
+    for pdf in top_pdfs:
+        best_section = sorted(pdf["sections"], key=lambda x: x["score"], reverse=True)[0]
+        top_sections.append(best_section)
 
-    prompt = (
-        f"You are a {persona}. Your job is to {job}. "
-        f"Read the following document section and summarize only the most useful insights for this purpose. "
-        f"Focus on practical tips, recommendations, must-do activities, or anything that would help with planning the trip.\n\n"
-        f"{text}"
-    )
-    input_ids = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=512).input_ids.to(device)
-    output = model.generate(input_ids, max_length=max_tokens)
-    return tokenizer.decode(output[0], skip_special_tokens=True)
+    # Add rank
+    top_sections = sorted(top_sections, key=lambda x: x["score"], reverse=True)
+    for i, sec in enumerate(top_sections):
+        sec["importance_rank"] = i + 1
 
-# --- 3. Main Orchestrator ---
-
-def main():
-    INPUT_JSON_PATH = "challenge1b_input (1).json"
-    OUTPUT_JSON_PATH = "challenge1b_output_final.json"
-
-    print("Loading input JSON...")
-    input_data = load_input_json(INPUT_JSON_PATH)
-    document_paths = [doc["filename"] for doc in input_data["documents"]]
-
-    all_heuristics = []
-
-    # Step 1: Extract spans & images and generate heuristics per PDF
-    for pdf_path in document_paths:
-        if not os.path.exists(pdf_path):
-            print(f"❌ File not found: {pdf_path}")
-            continue
-
-        print(f"\nProcessing PDF: {pdf_path}")
-        spans, images = get_pdf_text_from_path(pdf_path)
-        heuristics = run_all_heuristics(spans, images, pdf_path)
-        all_heuristics.extend(heuristics)
-
-    # Step 2: AI selects best heuristic per document
-    best_heuristics = select_best_heuristics_per_document(
-        all_heuristics,
-        input_data["persona"],
-        input_data["job_to_be_done"]["task"] if isinstance(input_data["job_to_be_done"], dict) else input_data["job_to_be_done"]
-    )
-
-    print(f"\nAI selected {len(best_heuristics)} best headers.")
-
-    # Step 3: Extract and summarize content
-    pdf_docs = {path: fitz.open(path) for path in set(h['doc_path'] for h in best_heuristics)}
-    final_sections = []
-    final_subsections = []
-
-    heuristics_by_doc = defaultdict(list)
-    for h in all_heuristics:
-        heuristics_by_doc[h["doc_path"]].append(h)
-
-    for rank, rule in enumerate(best_heuristics, start=1):
-        doc_path = rule['doc_path']
-        doc_name = os.path.basename(doc_path)
-        print(f"\nExtracting content under header '{rule['header_text']}' from {doc_name}")
-
-        # Extract text under this header using bounding boxes
-        doc = pdf_docs[doc_path]
-        text_chunk = extract_text_under_header(doc, heuristics_by_doc[doc_path], rule)
-
-        # Summarize extracted content
-        summary = summarize_text_for_trip(text_chunk, input_data["persona"], input_data["job_to_be_done"]["task"] if isinstance(input_data["job_to_be_done"], dict) else input_data["job_to_be_done"])
-
-        final_sections.append({
-            "document": doc_name,
-            "section_title": rule['header_text'],
-            "importance_rank": rank,
-            "page_number": rule['page']
-        })
-
-        final_subsections.append({
-            "document": doc_name,
-            "refined_text": summary if summary else "Not enough content to summarize.",
-            "page_number": rule['page']
-        })
-
-    # Close opened PDFs
-    for doc in pdf_docs.values():
-        doc.close()
-
-    # Final output assembly
-    final_output = {
+    output = {
         "metadata": {
-            "input_documents": document_paths,
-            "persona": input_data["persona"],
-            "job_to_be_done": input_data["job_to_be_done"],
-            "processing_timestamp": datetime.datetime.now().isoformat()
+            "input_documents": [doc["filename"] for doc in documents],
+            "persona": role,
+            "job_to_be_done": task,
+            "processing_timestamp": datetime.utcnow().isoformat()
         },
-        "extracted_sections": final_sections,
-        "subsection_analysis": final_subsections
+        "extracted_sections": [
+            {
+                "document": sec["document"],
+                "section_title": sec["section_title"],
+                "importance_rank": sec["importance_rank"],
+                "page_number": sec["page"]
+            } for sec in top_sections
+        ],
+        "subsection_analysis": [
+            {
+                "document": sec["document"],
+                "refined_text": sec["content"],
+                "page_number": sec["page"]
+            } for sec in top_sections
+        ]
     }
 
-    with open(OUTPUT_JSON_PATH, "w", encoding="utf-8") as f:
-        json.dump(final_output, f, indent=4)
+    with open("challenge1b_output.json", "w", encoding="utf-8") as f:
+        json.dump(output, f, indent=2, ensure_ascii=False)
 
-    print(f"\n🎉 Processing complete. Output saved to '{OUTPUT_JSON_PATH}'")
-
-
-if __name__ == "__main__":
-    main()
+    print(f"\n✅ Selected best 1 section from each of top {top_pdf_count} PDFs by keyword matches.")
+    print("✅ challenge1b_output.json saved.")
