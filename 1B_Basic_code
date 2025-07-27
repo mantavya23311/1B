@@ -20,7 +20,6 @@ def normalize_text(text):
         text = text.replace(bad, good)
     return unicodedata.normalize("NFKC", text)
 
-# Load spaCy model
 nlp = spacy.load("en_core_web_sm")
 
 def extract_pos_info(role: str, task: str):
@@ -82,6 +81,7 @@ def extract_sections_for_ranking(pdf_path, spans, images, max_size_th, mid_size,
         text = normalize_text(" ".join([s["text"] for s in para]))
         if 15 < len(text) < 1500:
             section_title = match_heading(para, headers)
+            # Fallback to sentence from paragraph if title is weird
             if section_title.startswith(("•", "-", "–")) or len(section_title.split()) > 10:
                 section_title = text.split(".")[0][:80]
             sections.append({
@@ -92,8 +92,8 @@ def extract_sections_for_ranking(pdf_path, spans, images, max_size_th, mid_size,
             })
     return sections
 
-def generate_round1b_output(input_json_path, pdf_dir,sections_to_merge=5):
-    top_pdf_count=5
+def generate_round1b_output(input_json_path, sections_to_merge=5):
+    top_pdf_count = 5
     with open(input_json_path) as f:
         config = json.load(f)
 
@@ -109,7 +109,7 @@ def generate_round1b_output(input_json_path, pdf_dir,sections_to_merge=5):
 
     for doc in documents:
         filename = doc["filename"]
-        pdf_path = os.path.join(pdf_dir, filename)
+        pdf_path = filename
         print(f"\U0001f4c4 Processing {filename}...")
 
         spans, threshold_size, doc_obj = extract_pdf_spans(pdf_path)
@@ -129,7 +129,6 @@ def generate_round1b_output(input_json_path, pdf_dir,sections_to_merge=5):
                 sec["score"] = ranker.score_section(sec["section_title"], sec["content"])
                 matched_sections.append(sec)
 
-        # Filter
         matched_sections = [
             s for s in matched_sections
             if s["section_title"].strip().lower() not in {"general", "conclusion"}
@@ -146,21 +145,19 @@ def generate_round1b_output(input_json_path, pdf_dir,sections_to_merge=5):
             })
             all_matched_sections.extend(matched_sections)
 
-    # Sort PDFs by keyword match count
+    # Sort PDFs by match count
     top_pdfs = sorted(pdf_section_info, key=lambda x: x["match_count"], reverse=True)[:top_pdf_count]
 
-    # Pick the best scored section from each of top 5 PDFs
+    # Best section from each top PDF
     top_sections = []
     for pdf in top_pdfs:
         best_section = sorted(pdf["sections"], key=lambda x: x["score"], reverse=True)[0]
         top_sections.append(best_section)
 
-    # Sort for importance rank
     top_sections = sorted(top_sections, key=lambda x: x["score"], reverse=True)
     for i, sec in enumerate(top_sections):
         sec["importance_rank"] = i + 1
 
-    # Get top 5 subsections overall for subsection_analysis
     top_5_subsections = sorted(all_matched_sections, key=lambda x: x["score"], reverse=True)[:5]
 
     output = {
