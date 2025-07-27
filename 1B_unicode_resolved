@@ -245,7 +245,12 @@ def generate_round1b_output(input_json_path, pdf_dir, sections_to_merge=5):
             "importance_score": round(importance_score, 4)
         })
 
-    ranked_sections = sorted(merged_sections_per_pdf, key=lambda x: x["importance_score"], reverse=True)
+    ranked_sections = sorted(
+    [sec for sec in merged_sections_per_pdf if sec["section_title"].strip().lower() not in {"general", "conclusion"}],
+    key=lambda x: x["importance_score"],
+    reverse=True
+)
+
 
     for i, sec in enumerate(ranked_sections):
         sec["importance_rank"] = i + 1
@@ -279,4 +284,3 @@ def generate_round1b_output(input_json_path, pdf_dir, sections_to_merge=5):
 
     print(f"\n✅ Generated {len(ranked_sections)} merged summaries (one per PDF)")
     print("✅ challenge1b_output.json saved.")
-
