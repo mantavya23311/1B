@@ -126,6 +126,65 @@ Example `challenge1b_input.json`:
 ✔ The ONNX model is already included via **Git LFS**, so no extra setup required.
 
 ---
+---
+Here’s a **clear and judge‑friendly Deliverables section** you can drop into your `README.md` under the **bottom of the file**:
+
+---
+
+## 📦 Deliverables
+
+Our Round 1B submission includes everything required for judges to execute, verify, and evaluate the solution without extra setup.
+
+### ✅ What’s Included
+
+* **Full Codebase** – Organized in `codeB/`, containing:
+
+  * `main_codeB.py` (the **entry point** running all Round 1B logic).
+  * `your_1A_code.py` (helper code reused from Round 1A for span extraction, header detection, and grouping).
+* **Dockerfile.B** – A complete Docker configuration that sets up **all dependencies** automatically (spacy, transformers, onnxruntime, pdf2image, etc.).
+* **ONNX Model** – Provided via **Git LFS** inside `onnx_model/` so judges don’t have to download or configure models manually.
+* **Sample Project Structure Image** – A visual representation of how the repository is laid out for clarity.
+* **Input & Output Folders** – Pre‑made folders for judges:
+
+  * `/input` → Place PDFs and a `challenge1b_input.json`.
+  * `/output` → The processed `challenge1b_output.json` will be generated here.
+
+### ✅ How It Executes
+
+1. Judges simply **build the Docker image**:
+
+   ```bash
+   docker build --platform linux/amd64 -t codeb:latest -f Dockerfile.B .
+   ```
+
+   🛠 This step automatically installs all system libraries (Tesseract OCR, Poppler, etc.) and Python dependencies, meaning **no manual pip installs** are needed.
+
+2. Judges **place PDFs & input JSON** in `/input` and run the container:
+
+   ```bash
+   docker run --rm -v ${PWD}/input:/app/input -v ${PWD}/output:/app/output codeb:latest
+   ```
+
+   ✅ The container scans the PDFs, extracts sections, ranks them via persona‑aware embeddings (ONNX), and outputs the final JSON to `/output`.
+
+3. **Output is fully self‑contained** – Judges will find a single `challenge1b_output.json` summarizing top sections and subsections, ready for review.
+
+### ✅ Why This is Judge‑Friendly
+
+* **Zero local setup**: No need to install Python, transformers, or OCR tools – Docker handles it all.
+* **Reusable & Flexible**: Judges can swap in *any* PDFs and persona JSON without code changes.
+* **Lightweight execution**: The ONNX model ensures **fast inference** without requiring GPU, PyTorch, or TensorFlow.
+* **Transparent folder structure**: Clear input → processing → output flow, fully isolated in Docker.
+
+This guarantees that the judging team can **clone, build, run, and verify** the solution in minutes, focusing on evaluation instead of troubleshooting.
+
+---
+
+
+
+
+---
+
 
 
 ## ✅ Done! 🎉
