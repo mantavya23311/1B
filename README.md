@@ -32,12 +32,15 @@ Here’s a **polished and judge‑friendly README.md** you can drop into your re
 ```markdown
 # 🏆 1B – Adobe Hackathon Round 1B Solution
 
+
 This repository contains the **Dockerized solution** for Round 1B of the Adobe Hackathon.  
 It processes PDF documents based on a provided persona and task, then outputs structured JSON.
 
 ---
 
 ## 📂 Project Structure
+<img width="1280" height="226" alt="image" src="https://github.com/user-attachments/assets/abc7f4ab-a4da-4230-9859-bd4e5604e501" />
+
 
 ```
 
