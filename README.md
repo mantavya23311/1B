@@ -109,6 +109,7 @@ Example `challenge1b_input.json`:
   docker run --rm -v ${PWD}/input:/app/input -v ${PWD}/output:/app/output codeb:latest
 
 
+```
 ---
 
 ### ✅ 6. **Check the Output**
