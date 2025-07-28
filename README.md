@@ -77,7 +77,8 @@ Make sure Docker Desktop is installed and running.
 Run this inside the project folder:
 
 ```bash
-docker build -f Dockerfile.B -t codeb:latest .
+docker build --platform linux/amd64 -t codeb:latest -f Dockerfile.B .
+
 ```
 
 ---
@@ -105,11 +106,8 @@ Example `challenge1b_input.json`:
 ### ✅ 5. **Run the Container**
 
 ```bash
-docker run --rm \
-   -v ${PWD}/input:/app/input \
-   -v ${PWD}/output:/app/output \
-   codeb:latest
-```
+  docker run --rm -v ${PWD}/input:/app/input -v ${PWD}/output:/app/output codeb:latest
+
 
 ---
 
@@ -142,12 +140,6 @@ docker run --rm \
 
 ---
 
-## 🛠 Requirements
-
-* 🐳 Docker (latest version)
-* 🖥️ At least **4GB RAM** recommended for smooth PDF processing
-
----
 
 ## ✅ Done! 🎉
 
