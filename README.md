@@ -37,19 +37,6 @@ It processes PDF documents based on a provided persona and task, then outputs st
 ## 📂 Project Structure
 <img width="1280" height="226" alt="image" src="https://github.com/user-attachments/assets/abc7f4ab-a4da-4230-9859-bd4e5604e501" />
 
-
-
-
-myproject/
-│── codeB/                # Main code for 1B
-│   ├── main\_codeB.py      # Entry point (Round 1B logic)
-│   ├── your\_1A\_code.py    # Helper code reused from Round 1A
-│── onnx\_model/            # Tokenizer + ONNX model files (Git LFS)
-│── input/                 # Judges will place PDFs + input JSON here
-│── output/                # Generated JSON output will appear here
-│── Dockerfile.B           # Dockerfile for building this solution
-│── README.md              # This file
-
 ````
 
 ---
