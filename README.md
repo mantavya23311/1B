@@ -191,4 +191,6 @@ This guarantees that the judging team can **clone, build, run, and verify** the 
 
 This setup ensures **zero manual hassle** – the system works out‑of‑the‑box for any PDF & persona combination.
 
+SAMPLE INPUT/OUTPUT HAS BEEN PROVIDED IN THE INPUT AND OUTPUT DIRECTORIES RESPECTIVELY, JUDGES CAN REMOVE TO ADD CUSTOM TEST CASES TO GENERATE CUSTOM OUTPUTS
+
 
