@@ -1,3 +1,30 @@
+# 1B
+## Solution code for 1B
+
+## Name of team members:
+1) Mantavya
+2) Arnav
+3) Anshul
+
+## Dependencies for the 1B_solution code:
+1) import os
+2) import json
+3) import re
+4) import statistics
+5) from datetime import datetime
+6) from collections import defaultdict, Counter
+7) import numpy as np
+8) import onnxruntime as ort
+9) from transformers import AutoTokenizer
+10) from pdf2image import convert_from_path
+11) from your_1a_code import extract_pdf_spans, classify_headers, group_adjacent_spans
+12) import spacy
+13) import unicodedata
+14) import shutil
+
+## This also support Multilingual pdfs summarizer:
+The solution for 1B also support multilingual pdf for summarizing and extracting relevent headers from them, as it is build upon 1A solution which is written in your_1a_code file.
+
 Here’s a **polished and judge‑friendly README.md** you can drop into your repo:
 
 ---
