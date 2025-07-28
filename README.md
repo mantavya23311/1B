@@ -24,25 +24,21 @@
 
 ## This also support Multilingual pdfs summarizer:
 The solution for 1B also support multilingual pdf for summarizing and extracting relevent headers from them, as it is build upon 1A solution which is written in your_1a_code file.
-
-Here’s a **polished and judge‑friendly README.md** you can drop into your repo:
-
 ---
-
 ```markdown
 # 🏆 1B – Adobe Hackathon Round 1B Solution
-
 
 This repository contains the **Dockerized solution** for Round 1B of the Adobe Hackathon.  
 It processes PDF documents based on a provided persona and task, then outputs structured JSON.
 
 ---
+```
 
 ## 📂 Project Structure
 <img width="1280" height="226" alt="image" src="https://github.com/user-attachments/assets/abc7f4ab-a4da-4230-9859-bd4e5604e501" />
 
 
-```
+
 
 myproject/
 │── codeB/                # Main code for 1B
